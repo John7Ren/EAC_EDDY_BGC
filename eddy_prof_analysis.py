@@ -30,10 +30,10 @@ def addParas(prof,eddy):
 
     month = np.array(pd.Series(prof.time.values).dt.month)
     season = np.zeros_like(month)
-    sls = np.array([[9, 10,11],
-                    [12,1, 2],
+    sls = np.array([[12,1, 2],
                     [3, 4, 5],
-                    [6, 7, 8]])
+                    [6, 7, 8],
+                    [9, 10,11]])
     for i in range(sls.shape[0]):
         season[np.in1d(month,sls[i,:])] = i
 
@@ -41,6 +41,9 @@ def addParas(prof,eddy):
         longevity = np.ones_like(prof.n_prof.values).astype('float')
         lat_birth = np.ones_like(prof.n_prof.values).astype('float')
         lon_birth = np.ones_like(prof.n_prof.values).astype('float')
+        time_birth = np.ones_like(prof.n_prof.values).astype('float')
+        area = np.ones_like(prof.n_prof.values).astype('float')
+        amplitude = np.ones_like(prof.n_prof.values).astype('float')
         iage= np.ones_like(prof.n_prof.values).astype('float')
 
         for i in range(len(prof.n_prof.values)):
@@ -50,6 +53,9 @@ def addParas(prof,eddy):
             longevity[i] = eddy.sel(n_eddy=r)['longevity']
             lat_birth[i] = eddy.sel(n_eddy=r)['lat_birth']
             lon_birth[i] = eddy.sel(n_eddy=r)['lon_birth']
+            time_birth[i] = eddy.sel(n_eddy=r)['time_birth']
+            area[i] = eddy.sel(n_eddy=r)['area_t']
+            amplitude[i] = eddy.sel(n_eddy=r)['amplitude_t']
             iage[i] = eddy['age'].values[mask] / longevity[i]
 
         prof = prof.assign_coords({'month':(['n_prof'],month),
@@ -57,6 +63,9 @@ def addParas(prof,eddy):
                                     'longevity':(['n_prof'],longevity),
                                     'lat_birth':(['n_prof'],lat_birth),
                                     'lon_birth':(['n_prof'],lon_birth),
+                                    'time_birth':(['n_prof'],time_birth),
+                                    'area':(['n_prof'],area),
+                                    'amplitude':(['n_prof'],amplitude),
                                     'iage':(['n_prof'],iage)})
     else:
         prof = prof.assign_coords({'month':(['n_prof'],month),
@@ -140,6 +149,9 @@ def inpaintnan1d(var_array,pres_old,res):
     pres_itp = np.arange(pres0,pres1+res/2,res)
     # remove nan and infinite
     mask_valid = np.isfinite(var_array) & np.isfinite(pres_old)
+    # count the in-situ observation number and assign them to the interpolated pressure bins
+    count, _ = np.histogram(pres_old[mask_valid],pres_itp)
+    count_pad = np.pad(count,pad_width=(0,1),mode='constant',constant_values=0)
     if mask_valid.sum() > 1:
         variable_valid = var_array[mask_valid]
         pres_old_valid = pres_old[mask_valid]
@@ -147,7 +159,7 @@ def inpaintnan1d(var_array,pres_old,res):
         var_itp = f(pres_itp)
     else:
         var_itp = np.nan * np.ones_like(pres_itp)
-    return var_itp,pres_itp
+    return var_itp,pres_itp,count_pad
 
 def addSigma0(prof):
     # load values
@@ -362,7 +374,8 @@ def cycidx2num():
     np.save('/Users/renjiongqiu/Library/CloudStorage/OneDrive-UniversityofTasmania/Documents/eddy_tracking/data/argoineddy_new.npy',argoineddy_new)
 
 def changeName(prof):
-    argoName_selected = np.array(['TEMP_ADJUSTED','PSAL_ADJUSTED','DOXY_ADJUSTED','NITRATE_ADJUSTED','CHLA_ADJUSTED'])
+    argoName_selected = np.array(['TEMP_ADJUSTED','PSAL_ADJUSTED','DOXY_ADJUSTED','NITRATE_ADJUSTED','CHLA_ADJUSTED','CHLA_FLUORESCENCE_ADJUSTED',
+                                  'TEMP_ADJUSTED_obs','PSAL_ADJUSTED_obs','DOXY_ADJUSTED_obs','NITRATE_ADJUSTED_obs','CHLA_ADJUSTED_obs','CHLA_FLUORESCENCE_ADJUSTED_obs'])
     argoName_ar = np.array(list(prof.data_vars.keys()))
     argoName_cross = argoName_ar[np.in1d(argoName_ar,argoName_selected)]
     newName = {} 
@@ -372,6 +385,13 @@ def changeName(prof):
     newName['NITRATE_ADJUSTED'] = 'nitrate'
     newName['CHLA_ADJUSTED'] = 'fluorescence'
     newName['CHLA_FLUORESCENCE_ADJUSTED'] = 'fluorescence'
+
+    newName['TEMP_ADJUSTED_obs'] = 'temperature_obs'
+    newName['PSAL_ADJUSTED_obs'] = 'salinity_obs'
+    newName['DOXY_ADJUSTED_obs'] = 'oxygen_obs'
+    newName['NITRATE_ADJUSTED_obs'] = 'nitrate_obs'
+    newName['CHLA_ADJUSTED_obs'] = 'fluorescence_obs'
+    newName['CHLA_FLUORESCENCE_ADJUSTED_obs'] = 'fluorescence_obs'
     for old in argoName_cross:
         new = newName[old]
         prof[new] = prof[old]
@@ -462,9 +482,10 @@ def makeArgoProf(eddy_type,changename=True,test=False):
             for ivar,var in enumerate(var_adjusted):
                 res = 1
                 var_array = ifloat[var][mask_cyc]
-                var_itp,pres_itp = inpaintnan1d(var_array,pres_old,res)
+                var_itp,pres_itp,obs_n = inpaintnan1d(var_array,pres_old,res)
                 var_itp = var_itp.reshape(len(var_itp),1)
-                da = xr.DataArray(data=var_itp,
+                obs_n = obs_n.reshape(len(obs_n),1)
+                ds[var] = xr.DataArray(data=var_itp,
                                 dims=['pressure','n_prof'],
                                 coords={'pressure':(['pressure'],pres_itp),
                                         'validity':(['n_prof'],['yes']),
@@ -483,12 +504,30 @@ def makeArgoProf(eddy_type,changename=True,test=False):
                                         'lat_edd_eff':(['n_prof'],[lat_edd_eff]),
                                         'rad':(['n_prof'],[rad]),
                                         'rad_deg':(['n_prof'],[rad_deg])})
-                ds[var] = da
+                ds[var+'_obs'] = xr.DataArray(data=obs_n,
+                                dims=['pressure','n_prof'],
+                                coords={'pressure':(['pressure'],pres_itp),
+                                        'validity':(['n_prof'],['yes']),
+                                        'n_prof':(['n_prof'],[i]),
+                                        'eddyidx':(['n_prof'],[ied]),
+                                        'float':(['n_prof'],[ifl]),
+                                        'cycle_number':(['n_prof'],[icyc]),
+                                        'x':(['n_prof'],[x]),
+                                        'lon':(['n_prof'],[lon]),
+                                        'lat':(['n_prof'],[lat]),
+                                        'time':(['n_prof'],[time]),
+                                        'time_edd':(['n_prof'],[time_edd]),
+                                        'lon_edd':(['n_prof'],[lon_edd]),
+                                        'lat_edd':(['n_prof'],[lat_edd]),
+                                        'lon_edd_eff':(['n_prof'],[lon_edd_eff]),
+                                        'lat_edd_eff':(['n_prof'],[lat_edd_eff]),
+                                        'rad':(['n_prof'],[rad]),
+                                        'rad_deg':(['n_prof'],[rad_deg])})
             ds = ds.assign_coords({'lon_cont':(['n_prof','Ncont'],lon_cont.data),'lat_cont':(['n_prof','Ncont'],lat_cont.data)})
         elif len(pres_valid) == 1:
             ds = xr.Dataset({})
             for ivar,var in enumerate(var_adjusted):
-                da = xr.DataArray(data=ifloat[var][mask_cyc].reshape(1,1),
+                ds[var] = xr.DataArray(data=ifloat[var][mask_cyc].reshape(1,1),
                                 dims=['pressure','n_prof'],
                                 coords={'pressure':(['pressure'],[0]),
                                         'validity':(['n_prof'],['no']),
@@ -507,7 +546,25 @@ def makeArgoProf(eddy_type,changename=True,test=False):
                                         'lat_edd_eff':(['n_prof'],[lat_edd_eff]),
                                         'rad':(['n_prof'],[rad]),
                                         'rad_deg':(['n_prof'],[rad_deg])})
-                ds[var] = da
+                ds[var+'_obs'] = xr.DataArray(data=[[1]],
+                                dims=['pressure','n_prof'],
+                                coords={'pressure':(['pressure'],pres_itp),
+                                        'validity':(['n_prof'],['no']),
+                                        'n_prof':(['n_prof'],[i]),
+                                        'eddyidx':(['n_prof'],[ied]),
+                                        'float':(['n_prof'],[ifl]),
+                                        'cycle_number':(['n_prof'],[icyc]),
+                                        'x':(['n_prof'],[x]),
+                                        'lon':(['n_prof'],[lon]),
+                                        'lat':(['n_prof'],[lat]),
+                                        'time':(['n_prof'],[time]),
+                                        'time_edd':(['n_prof'],[time_edd]),
+                                        'lon_edd':(['n_prof'],[lon_edd]),
+                                        'lat_edd':(['n_prof'],[lat_edd]),
+                                        'lon_edd_eff':(['n_prof'],[lon_edd_eff]),
+                                        'lat_edd_eff':(['n_prof'],[lat_edd_eff]),
+                                        'rad':(['n_prof'],[rad]),
+                                        'rad_deg':(['n_prof'],[rad_deg])})
             ds = ds.assign_coords({'lon_cont':(['n_prof','Ncont'],lon_cont.data),'lat_cont':(['n_prof','Ncont'],lat_cont.data)})
         else:
             print(f'PRES_ADJUSTED is all nan at F{ifl} - C{icyc}')
@@ -583,9 +640,20 @@ def makeArgoProf_OUT(eddy_type='O',changename=True,test=False):
             for ivar,var in enumerate(var_adjusted):
                 res = 1
                 var_array = ifloat[var][mask_cyc]
-                var_itp,pres_itp = inpaintnan1d(var_array,pres_old,res)
+                var_itp,pres_itp,obs_n = inpaintnan1d(var_array,pres_old,res)
                 var_itp = var_itp.reshape(len(var_itp),1)
-                da = xr.DataArray(data=var_itp,
+                obs_n = obs_n.reshape(len(obs_n),1)
+                ds[var] = xr.DataArray(data=var_itp,
+                                dims=['pressure','n_prof'],
+                                coords={'pressure':(['pressure'],pres_itp),
+                                        'validity':(['n_prof'],['yes']),
+                                        'n_prof':(['n_prof'],[i]),
+                                        'float':(['n_prof'],[ifl]),
+                                        'cycle_number':(['n_prof'],[icyc]),
+                                        'lon':(['n_prof'],[lon]),
+                                        'lat':(['n_prof'],[lat]),
+                                        'time':(['n_prof'],[time])})
+                ds[var+'_obs'] = xr.DataArray(data=obs_n,
                                 dims=['pressure','n_prof'],
                                 coords={'pressure':(['pressure'],pres_itp),
                                         'validity':(['n_prof'],['yes']),
@@ -597,12 +665,21 @@ def makeArgoProf_OUT(eddy_type='O',changename=True,test=False):
                                         'time':(['n_prof'],[time])})
                 if var == 'CHLA_FLUORESCENCE_ADJUSTED':
                     var = 'CHLA_ADJUSTED'
-                ds[var] = da
 
         elif len(pres_valid) == 1:
             ds = xr.Dataset({})
             for ivar,var in enumerate(var_adjusted):
-                da = xr.DataArray(data=ifloat[var][mask_cyc].reshape(1,1),
+                ds[var] = xr.DataArray(data=ifloat[var][mask_cyc].reshape(1,1),
+                                dims=['pressure','n_prof'],
+                                coords={'pressure':(['pressure'],[0]),
+                                        'validity':(['n_prof'],['no']),
+                                        'n_prof':(['n_prof'],[i]),
+                                        'float':(['n_prof'],[ifl]),
+                                        'cycle_number':(['n_prof'],[icyc]),
+                                        'lon':(['n_prof'],[lon]),
+                                        'lat':(['n_prof'],[lat]),
+                                        'time':(['n_prof'],[time])})
+                ds[var+'_obs'] = xr.DataArray(data=[[1]],
                                 dims=['pressure','n_prof'],
                                 coords={'pressure':(['pressure'],[0]),
                                         'validity':(['n_prof'],['no']),
@@ -614,7 +691,6 @@ def makeArgoProf_OUT(eddy_type='O',changename=True,test=False):
                                         'time':(['n_prof'],[time])})
                 if var == 'CHLA_FLUORESCENCE_ADJUSTED':
                     var = 'CHLA_ADJUSTED'
-                ds[var] = da
         else:
             print(f'PRES_ADJUSTED is all nan at F{ifl} - C{icyc}')
 
@@ -766,9 +842,10 @@ def makeHisProf_type(ctd_type,eddy_type,test=False):
         for var in var_list:
             res = 1
             var_array = prof1[var].values
-            value_interp,pres_interp = inpaintnan1d(var_array,pres_old,res)
+            value_interp,pres_interp,obs_n = inpaintnan1d(var_array,pres_old,res)
             value_interp = value_interp.reshape(len(value_interp),1)
-            da = xr.DataArray(data = value_interp,
+            obs_n = obs_n.reshape(len(obs_n),1)
+            ds[var] = xr.DataArray(data = value_interp,
                               dims = ['pressure','n_prof'],
                               coords = {'n_prof':(['n_prof'],[ip]),
                                         'cast':(['n_prof'],[cast]),
@@ -787,7 +864,25 @@ def makeHisProf_type(ctd_type,eddy_type,test=False):
                                         'lat_edd_eff':(['n_prof'],[lat_edd_eff]),
                                         'rad':(['n_prof'],[rad]),
                                         'rad_deg':(['n_prof'],[rad_deg])})
-            ds[var] = da
+            ds[var+'_obs'] = xr.DataArray(data = obs_n,
+                              dims = ['pressure','n_prof'],
+                              coords = {'n_prof':(['n_prof'],[ip]),
+                                        'cast':(['n_prof'],[cast]),
+                                        'cruise':(['n_prof'],[cruise]),
+                                        'ctdindex':(['n_prof'],[ctdindex]),
+                                        'x':(['n_prof'],[x]),
+                                        'pressure':(['pressure'],pres_interp),
+                                        'eddyidx':(['n_prof'],[ied]),
+                                        'lon':(['n_prof'],[lon]),
+                                        'lat':(['n_prof'],[lat]),
+                                        'time':(['n_prof'],[time]),
+                                        'time_edd':(['n_prof'],time_edd),
+                                        'lon_edd':(['n_prof'],[lon_edd]),
+                                        'lat_edd':(['n_prof'],[lat_edd]),
+                                        'lon_edd_eff':(['n_prof'],[lon_edd_eff]),
+                                        'lat_edd_eff':(['n_prof'],[lat_edd_eff]),
+                                        'rad':(['n_prof'],[rad]),
+                                        'rad_deg':(['n_prof'],[rad_deg])})
         ds = ds.assign_coords({'lon_cont':(['n_prof','Ncont'],lon_cont.data),'lat_cont':(['n_prof','Ncont'],lat_cont.data)})
         
         if ip == 0:
@@ -900,19 +995,29 @@ def makeHisProf_OUT(eddy_type='O',test=False):
             for var in var_list:
                 res = 1
                 var_array = prof1[var].values
-                value_interp,pres_interp = inpaintnan1d(var_array,pres_old,res)
+                value_interp,pres_interp,obs_n = inpaintnan1d(var_array,pres_old,res)
                 value_interp = value_interp.reshape(len(value_interp),1)
-                da = xr.DataArray(data = value_interp,
+                obs_n = obs_n.reshape(len(obs_n),1)
+                ds[var] = xr.DataArray(data = value_interp,
                                 dims = ['pressure','n_prof'],
                                 coords = {'n_prof':(['n_prof'],[n_prof]),
-                                            'cast':(['n_prof'],[cast]),
-                                            'cruise':(['n_prof'],[cruise]),
-                                            'ctdindex':(['n_prof'],[ctdindex]),
-                                            'pressure':(['pressure'],pres_interp),
-                                            'lon':(['n_prof'],[lon]),
-                                            'lat':(['n_prof'],[lat]),
-                                            'time':(['n_prof'],[time])})
-                ds[var] = da
+                                          'cast':(['n_prof'],[cast]),
+                                          'cruise':(['n_prof'],[cruise]),
+                                          'ctdindex':(['n_prof'],[ctdindex]),
+                                          'pressure':(['pressure'],pres_interp),
+                                          'lon':(['n_prof'],[lon]),
+                                          'lat':(['n_prof'],[lat]),
+                                          'time':(['n_prof'],[time])})
+                ds[var] = xr.DataArray(data = obs_n,
+                                dims = ['pressure','n_prof'],
+                                coords = {'n_prof':(['n_prof'],[n_prof]),
+                                          'cast':(['n_prof'],[cast]),
+                                          'cruise':(['n_prof'],[cruise]),
+                                          'ctdindex':(['n_prof'],[ctdindex]),
+                                          'pressure':(['pressure'],pres_interp),
+                                          'lon':(['n_prof'],[lon]),
+                                          'lat':(['n_prof'],[lat]),
+                                          'time':(['n_prof'],[time])})
             if i == 0:
                 DS = ds.copy()
             else:
@@ -976,10 +1081,14 @@ def make_interp_dataset_ctd(ctd_files):
             da = da.where(daflag==0,np.nan) # flag the bad data
             id = int(ds.attrs['Deployment'])
             res = 1
-            value_interp,pressure_interp = inpaintnan1d(da.values,pressure_old,res)
+            value_interp,pressure_interp,obs_n = inpaintnan1d(da.values,pressure_old,res)
             var_dict[var] = {'data':value_interp,
                              'dims':'pressure',
                              'coords':{'pressure':{'dims':'pressure','data':pressure_interp}}}
+            if var in ['temperature','salinity','oxygen','fluorometer']:
+                var_dict[var+'_obs'] = {'data':obs_n,
+                                'dims':'pressure',
+                                'coords':{'pressure':{'dims':'pressure','data':pressure_interp}}}
         
         ds = xr.Dataset.from_dict(var_dict)
         ds = ds.expand_dims({'deployment':1})
@@ -1039,11 +1148,14 @@ def make_interp_dataset_hydro(hydro_file):
             da = ds_i[var]
             res = 1
             pressure_old = da.pressure.values
-            value_interp,pressure_interp = inpaintnan1d(da.values,pressure_old,res)
+            value_interp,pressure_interp,obs_n = inpaintnan1d(da.values,pressure_old,res)
             var_dict[var] = {'data':value_interp,
                              'dims':'pressure',
                              'coords':{'pressure':{'dims':'pressure','data':pressure_interp}}}
-        
+            if var in ['nitrate','phosphate','silicate']:
+                var_dict[var+'_obs'] = {'data':obs_n,
+                                'dims':'pressure',
+                                'coords':{'pressure':{'dims':'pressure','data':pressure_interp}}}
         ds = xr.Dataset.from_dict(var_dict)
         ds = ds.expand_dims({'deployment':1})
         ds['deployment'] = [id]
@@ -1169,7 +1281,8 @@ def makeV06Prof(eddy_type):
     prof_in_eddy = profineddy(prof_combined,eddy)
 
     # change fluorometer to fluorescence
-    prof_in_eddy = prof_in_eddy.rename({'fluorometer':'fluorescence'})
+    prof_in_eddy = prof_in_eddy.rename({'fluorometer':'fluorescence',
+                                        'fluorometer_obs':'fluorescence_obs'})
 
     return prof_in_eddy,eddy_ds
 
@@ -1206,7 +1319,8 @@ def makeV06Prof_OUT(eddy_type='O'):
     prof_out_eddy['n_prof'] = prof_out_eddy['n_prof'].astype(int)
 
     # change fluorometer to fluorescence
-    prof_out_eddy = prof_out_eddy.rename({'fluorometer':'fluorescence'})
+    prof_out_eddy = prof_out_eddy.rename({'fluorometer':'fluorescence',
+                                          'fluorometer_obs':'fluorescence_obs'})
 
     eddy_ds = xr.Dataset({})
     return prof_out_eddy,eddy_ds
